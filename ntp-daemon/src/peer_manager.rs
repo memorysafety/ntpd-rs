@@ -8,6 +8,8 @@ use crate::{
 use ntp_proto::{NtpClock, PeerSnapshot};
 use tokio::task::JoinHandle;
 
+const NETWORK_WAIT_PERIOD: std::time::Duration = std::time::Duration::from_secs(60);
+
 #[derive(Debug, Clone, Copy)]
 pub enum PeerStatus {
     /// We are waiting for the first snapshot from this peer _in the current reset epoch_.
@@ -72,17 +74,27 @@ impl<C: NtpClock> Peers<C> {
         }
     }
 
-    pub async fn add_peer(&mut self, config: PeerConfig) -> std::io::Result<JoinHandle<()>> {
+    fn add_peer_internal(&mut self, config: Arc<PeerConfig>) -> JoinHandle<()> {
         let index = self.indexer.get();
         let addr = config.addr.clone();
         self.peers.insert(
             index,
             PeerData {
                 status: PeerStatus::NoMeasurement,
-                config: Arc::new(config),
+                config,
             },
         );
-        PeerTask::spawn(index, &addr, self.clock.clone(), self.channels.clone()).await
+        PeerTask::spawn(
+            index,
+            addr,
+            self.clock.clone(),
+            NETWORK_WAIT_PERIOD,
+            self.channels.clone(),
+        )
+    }
+
+    pub async fn add_peer(&mut self, config: PeerConfig) -> JoinHandle<()> {
+        self.add_peer_internal(Arc::new(config))
     }
 
     #[cfg(test)]
@@ -150,6 +162,11 @@ impl<C: NtpClock> Peers<C> {
                 if current_reset_epoch == msg_reset_epoch {
                     self.peers.get_mut(&index).unwrap().status = PeerStatus::Measurement(snapshot);
                 }
+            }
+            MsgForSystem::NetworkIssue(index) => {
+                // Restart the peer reusing its configuration.
+                let config = self.peers.remove(&index).unwrap().config;
+                self.add_peer_internal(config);
             }
         }
     }

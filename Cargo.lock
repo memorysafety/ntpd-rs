@@ -652,6 +652,7 @@ name = "ntp-daemon"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "libc",
  "ntp-os-clock",
  "ntp-proto",
  "ntp-udp",

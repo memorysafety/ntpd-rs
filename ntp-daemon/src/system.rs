@@ -50,7 +50,7 @@ pub async fn spawn(
         UnixNtpClock::new(),
     );
     for peer_config in peer_configs.iter() {
-        peers.add_peer(peer_config.to_owned()).await?;
+        peers.add_peer(peer_config.to_owned()).await;
     }
     let peers = Arc::new(tokio::sync::RwLock::new(peers));
 
