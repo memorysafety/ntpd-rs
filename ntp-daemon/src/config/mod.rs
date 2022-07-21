@@ -456,12 +456,8 @@ mod tests {
 
     #[test]
     fn clap_peers_invalid() {
-        let arguments = &["--", "--peer", "foo.bar:123"];
-        let parsed = CmdArgs::try_parse_from(arguments).unwrap_err();
-
-        let error = r#"failed to lookup address information"#;
-
-        assert!(parsed.to_string().contains(error));
+        let arguments = &["--", "--peer", ":invalid:ipv6:123"];
+        assert!(CmdArgs::try_parse_from(arguments).is_err());
     }
 
     #[test]
@@ -469,13 +465,10 @@ mod tests {
         let config: Result<Config, _> = toml::from_str(
             r#"
             [[peers]]
-            addr = "foo.bar:123"
+            addr = ":invalid:ipv6:123"
             "#,
         );
 
-        let e = config.unwrap_err();
-        let error = r#"failed to lookup address information"#;
-
-        assert!(e.to_string().contains(error));
+        assert!(config.is_err());
     }
 }

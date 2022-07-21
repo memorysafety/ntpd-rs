@@ -1,4 +1,4 @@
-use std::{fmt, net::ToSocketAddrs};
+use std::{fmt, net::SocketAddr};
 
 use serde::{
     de::{self, MapAccess, Visitor},
@@ -18,42 +18,51 @@ impl Default for PeerHostMode {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct PeerConfig {
-    // Invariant: `.to_socket_addrs` will succeed on this value. That means it must use a valid tld
-    // and contain a port
+    // We ensure that this is an address with a host and port part
+    // however the host may or may not be valid.
     pub addr: String,
     pub mode: PeerHostMode,
+}
+
+fn normalize_addr(mut addr: String) -> std::io::Result<String> {
+    if addr.split(':').count() > 2 {
+        // IPv6, try to parse it as such
+        match addr.parse::<SocketAddr>() {
+            Ok(_) => Ok(addr),
+            Err(e) => {
+                // Could be because of no port, add one and see
+                addr = format!("[{addr}]:123");
+                if addr.parse::<SocketAddr>().is_ok() {
+                    Ok(addr)
+                } else {
+                    Err(std::io::Error::new(std::io::ErrorKind::Other, e))
+                }
+            }
+        }
+    } else if let Some((_, port)) = addr.split_once(':') {
+        // Not ipv6, and we seem to have a port. We cant reasonably
+        // check whether the host is valid, but at least check that
+        // the port is.
+        match port.parse::<u16>() {
+            Ok(_) => Ok(addr),
+            Err(e) => Err(std::io::Error::new(std::io::ErrorKind::Other, e)),
+        }
+    } else {
+        // Not ipv6 and no port. As we cant reasonably check host
+        // so just append a port
+        addr.push_str(":123");
+        Ok(addr)
+    }
 }
 
 impl TryFrom<&str> for PeerConfig {
     type Error = std::io::Error;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        let mut addr = value.to_string();
-
-        match addr.to_socket_addrs() {
-            Ok(_) => {
-                // address already has a port
-                Ok(PeerConfig {
-                    addr,
-                    mode: PeerHostMode::Server,
-                })
-            }
-            Err(e) => {
-                // try to fix the address by adding the NTP port
-                addr.push_str(":123");
-
-                if addr.to_socket_addrs().is_ok() {
-                    Ok(PeerConfig {
-                        addr,
-                        mode: PeerHostMode::Server,
-                    })
-                } else {
-                    // e.g. the top-level domain does not exist
-                    // (or we just don't have an internet connection)
-                    Err(e)
-                }
-            }
-        }
+        Ok(PeerConfig {
+            addr: normalize_addr(value.into())?,
+            mode: PeerHostMode::Server,
+        })
     }
 }
 
@@ -88,11 +97,11 @@ impl<'de> Deserialize<'de> for PeerConfig {
                             }
                             let raw: String = map.next_value()?;
 
-                            // validate: this will add the `:123` port if not port is specified
-                            let config =
-                                PeerConfig::try_from(raw.as_str()).map_err(de::Error::custom)?;
+                            // validate: this will add the `:123` port if no port is specified
+                            let parsed_addr =
+                                normalize_addr(raw.as_str().into()).map_err(de::Error::custom)?;
 
-                            addr = Some(config.addr);
+                            addr = Some(parsed_addr);
                         }
                         "mode" => {
                             if mode.is_some() {
@@ -158,5 +167,20 @@ mod tests {
         let peer = PeerConfig::try_from("example.com:5678").unwrap();
         assert_eq!(peer.addr, "example.com:5678");
         assert_eq!(peer.mode, PeerHostMode::Server);
+    }
+
+    #[test]
+    fn test_normalize_addr() {
+        let addr = normalize_addr("[::1]:456".into()).unwrap();
+        assert_eq!(addr, "[::1]:456");
+        let addr = normalize_addr("::1".into()).unwrap();
+        assert_eq!(addr, "[::1]:123");
+        assert!(normalize_addr(":some:invalid:1".into()).is_err());
+        let addr = normalize_addr("127.0.0.1:456".into()).unwrap();
+        assert_eq!(addr, "127.0.0.1:456");
+        let addr = normalize_addr("127.0.0.1".into()).unwrap();
+        assert_eq!(addr, "127.0.0.1:123");
+        let addr = normalize_addr("1234567890.example.com".into()).unwrap();
+        assert_eq!(addr, "1234567890.example.com:123");
     }
 }
