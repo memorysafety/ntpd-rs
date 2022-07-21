@@ -125,6 +125,8 @@ pub struct NtpHeader {
 }
 
 impl NtpHeader {
+    pub const WIRE_SIZE: usize = 48;
+
     /// A new, empty NtpHeader
     pub fn new() -> Self {
         Self {

@@ -9,7 +9,6 @@ use rand::{thread_rng, Rng};
 use tracing::{debug, instrument, warn};
 
 use tokio::{
-    net::ToSocketAddrs,
     sync::watch,
     time::{Instant, Sleep},
 };
@@ -143,8 +142,14 @@ where
             }
         }
 
-        if let Err(error) = self.socket.send(&packet.serialize()).await {
-            warn!(?error, "poll message could not be sent");
+        match self.socket.send(&packet.serialize()).await {
+            Err(error) => {
+                warn!(?error, "poll message could not be sent");
+            }
+            Ok((_written, opt_send_timestamp)) => {
+                // update the last_send_timestamp with the one given by the kernel, if available
+                self.last_send_timestamp = opt_send_timestamp.or(self.last_send_timestamp);
+            }
         }
     }
 
@@ -239,12 +244,15 @@ where
     C: 'static + NtpClock + Send,
 {
     #[instrument(skip(clock, channels))]
-    pub async fn spawn<A: ToSocketAddrs + std::fmt::Debug>(
+    pub async fn spawn<A>(
         index: PeerIndex,
         addr: A,
         clock: C,
         mut channels: PeerChannels,
-    ) -> std::io::Result<tokio::task::JoinHandle<()>> {
+    ) -> std::io::Result<tokio::task::JoinHandle<()>>
+    where
+        A: tokio::net::ToSocketAddrs + std::fmt::Debug,
+    {
         let socket = UdpSocket::new("0.0.0.0:0", addr).await?;
         let our_id = ReferenceId::from_ip(socket.as_ref().local_addr().unwrap().ip());
         let peer_id = ReferenceId::from_ip(socket.as_ref().peer_addr().unwrap().ip());
@@ -571,7 +579,7 @@ mod tests {
         reset.send(epoch_b).unwrap();
 
         // Not foolproof, but hopefully this ensures the reset is processed first
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         poll_send.notify();
         let peer_epoch = match msg_recv.recv().await.unwrap() {
